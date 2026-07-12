@@ -2,11 +2,13 @@ using Microsoft.Extensions.Options;
 using Munters.Giphy.Api.Clients;
 using Munters.Giphy.Api.Options;
 using Munters.Giphy.Api.Services;
+using Munters.Giphy.Api.Caching;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+builder.Services.AddMemoryCache();
 
 builder.Services
     .AddOptions<GiphyOptions>()
@@ -28,6 +30,17 @@ builder.Services
         "Giphy TrendingLimit must be greater than zero.")
     .ValidateOnStart();
 
+builder.Services
+    .AddOptions<CacheOptions>()
+    .Bind(builder.Configuration.GetSection(CacheOptions.SectionName))
+    .Validate(
+        options => options.SearchExpirationMinutes > 0,
+        "Cache SearchExpirationMinutes must be greater than zero.")
+    .Validate(
+        options => options.TrendingExpirationMinutes > 0,
+        "Cache TrendingExpirationMinutes must be greater than zero.")
+    .ValidateOnStart();
+
 builder.Services.AddHttpClient<IGiphyClient, GiphyClient>(
     (serviceProvider, httpClient) =>
     {
@@ -39,6 +52,7 @@ builder.Services.AddHttpClient<IGiphyClient, GiphyClient>(
         httpClient.Timeout = TimeSpan.FromSeconds(10);
     });
 
+builder.Services.AddSingleton<IRequestCache, MemoryRequestCache>();
 builder.Services.AddScoped<IGifService, GifService>();
 
 var app = builder.Build();
