@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace Munters.Giphy.Api.Caching;
@@ -6,6 +7,9 @@ public sealed class MemoryRequestCache : IRequestCache
 {
     private readonly IMemoryCache _memoryCache;
     private readonly ILogger<MemoryRequestCache> _logger;
+
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks =
+        new();
 
     public MemoryRequestCache(
         IMemoryCache memoryCache,
@@ -21,27 +25,56 @@ public sealed class MemoryRequestCache : IRequestCache
         Func<CancellationToken, Task<T>> factory,
         CancellationToken cancellationToken)
     {
-        if (_memoryCache.TryGetValue(key, out T? cachedValue) &&
-            cachedValue is not null)
+        if (TryGetCachedValue(key, out T? cachedValue))
         {
             _logger.LogInformation(
                 "Cache hit for key {CacheKey}",
                 key);
 
-            return cachedValue;
+            return cachedValue!;
         }
 
         _logger.LogInformation(
             "Cache miss for key {CacheKey}",
             key);
 
-        var value = await factory(cancellationToken);
-
-        _memoryCache.Set(
+        var keyLock = _locks.GetOrAdd(
             key,
-            value,
-            expiration);
+            static _ => new SemaphoreSlim(1, 1));
 
-        return value;
+        await keyLock.WaitAsync(cancellationToken);
+
+        try
+        {
+            if (TryGetCachedValue(key, out cachedValue))
+            {
+                _logger.LogInformation(
+                    "Cache filled while waiting for key {CacheKey}",
+                    key);
+
+                return cachedValue!;
+            }
+
+            var value = await factory(cancellationToken);
+
+            _memoryCache.Set(
+                key,
+                value,
+                expiration);
+
+            return value;
+        }
+        finally
+        {
+            keyLock.Release();
+        }
+    }
+
+    private bool TryGetCachedValue<T>(
+        string key,
+        out T? value)
+    {
+        return _memoryCache.TryGetValue(key, out value) &&
+               value is not null;
     }
 }
